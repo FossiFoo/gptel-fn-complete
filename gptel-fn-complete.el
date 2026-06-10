@@ -5,7 +5,8 @@
 
 ;; Author: Michael Olson <mwolson@gnu.org>
 ;; Maintainer: Michael Olson <mwolson@gnu.org>
-;; Version: 0.3.2
+;; Package-Version: 20250317.1805
+;; Package-Revision: 6970dfa5c123
 ;; URL: https://github.com/mwolson/gptel-fn-complete
 ;; Package-Requires: ((emacs "29.1") (gptel "0.9.8"))
 ;; Keywords: hypermedia, convenience, tools
@@ -34,6 +35,8 @@
 ;;
 ;; To use this library, install both gptel and gptel-fn-complete, and then bind
 ;; `gptel-fn-complete` to your key of choice.
+
+;; Modification: fix callback on empty responses
 
 ;;; Code:
 (require 'gptel)
@@ -254,15 +257,22 @@ but do not send the request."
          ;; Try to send context with system message
          (gptel-use-context
           (and gptel-use-context (if nosystem 'user 'system)))
-         (prompt (list (get-char-property (point) 'gptel-rewrite)
+         (code (if single-function-p
+                   (buffer-substring-no-properties (point) (mark))  ; from mark-function
+                 (buffer-substring-no-properties (region-beginning) (region-end))))
+         (prompt (list code
                        "What is the required change?"
-                       (format gptel-fn-complete-extra-directive
-                               (or (get-char-property (point) 'gptel-rewrite)
-                                   (buffer-substring-no-properties
-                                    (region-beginning) (region-end))))))
+                       (format gptel-fn-complete-extra-directive code)))
          (directive (if single-function-p
                         gptel-fn-complete-function-directive
-                      gptel-fn-complete-region-directive)))
+                      gptel-fn-complete-region-directive))
+         (context (let ((ov (or (cdr-safe (get-char-property-and-overlay
+                                           (point) 'gptel-rewrite))
+                                (make-overlay (region-beginning) (region-end)
+                                              nil t))))
+                    (overlay-put ov 'category 'gptel)
+                    (overlay-put ov 'evaporate t)
+                    (cons ov (generate-new-buffer "*gptel-fn-complete*")))))
     (when nosystem
       (setcar prompt (concat
                       (car-safe (gptel--parse-directive directive 'raw))
@@ -271,14 +281,7 @@ but do not send the request."
              :dry-run dry-run
              :system directive
              :stream gptel-stream
-             :context
-             (let ((ov (or (cdr-safe (get-char-property-and-overlay
-                                      (point) 'gptel-rewrite))
-                           (make-overlay (region-beginning) (region-end)
-                                         nil t))))
-               (overlay-put ov 'category 'gptel)
-               (overlay-put ov 'evaporate t)
-               (cons ov (generate-new-buffer "*gptel-fn-complete*")))
+             :context context
              :callback #'gptel-fn-complete--callback)
       ;; Move back so that the cursor is on the overlay when done.
       (unless (get-char-property (point) 'gptel-rewrite)
@@ -307,6 +310,13 @@ INFO is the async communication channel for the rewrite request."
           (setq should-send nil)
         (plist-put info :fn-completion-started t)))
     (when should-send
+      (when-let* ((ov (car-safe (plist-get info :context)))
+                  ((not (overlay-get ov 'status))))
+        (overlay-put ov 'status
+                     (list (propertize "REWRITE" 'face '(warning default))
+                           (propertize " Waiting..." 'face '(warning default))
+                           " "
+                           "")))
       (gptel--rewrite-callback response info))))
 
 (provide 'gptel-fn-complete)
